@@ -11,6 +11,7 @@
 #include "resource_loading.hpp"
 #include <imgui.h>
 #include <algorithm>
+#include <string>
 
 namespace reshade::d3d11
 {
@@ -507,8 +508,8 @@ namespace reshade::d3d11
 		if (!is_initialized())
 			return;
 
-		_vertices = tracker.vertices();
-		_drawcalls = tracker.drawcalls();
+		_vertices = tracker.total_vertices();
+		_drawcalls = tracker.total_drawcalls();
 
 		runtime::on_frame();
 
@@ -570,6 +571,8 @@ namespace reshade::d3d11
 
 			on_present_effect();
 		}
+
+		recap_handler.on_present(_device.get(), _immediate_context.get(), _backbuffer_resolved.get(), _depthstencil_texture.get(), _best_snapshot, tracker.constant_counters());
 
 		// Apply presenting
 		runtime::on_present();
@@ -1006,7 +1009,31 @@ namespace reshade::d3d11
 
 				ImGui::SameLine();
 
-				ImGui::Text("| %u draw calls ==> %u vertices", it.second.drawcalls, it.second.vertices);
+				std::string additional_view_label = it.second.additional_views.size() > 0 ? "(" : "";
+				unsigned int i = 1;
+				for (auto const&[key, val] : it.second.additional_views) {
+					additional_view_label += std::to_string(val.drawcalls) + (i < it.second.additional_views.size() ? ", " : "");
+					i++;
+				}
+				additional_view_label += it.second.additional_views.size() > 0 ? ")" : "";
+
+				ImGui::Text("| %u draw calls ==> %u vertices, %u additional rendertargets %s", it.second.counter.drawcalls, it.second.counter.vertices, it.second.additional_views.size(), additional_view_label.c_str());
+			}
+
+			ImGui::Text("Is Multisampled : %s", _is_multisampling_enabled ? "true" : "false");
+
+			for (const auto &[buffer, counter] : tracker.constant_counters())
+			{
+				if (counter.pixelshaders > 0 && counter.vertexshaders > 0 && counter.mapped < .10 * counter.vertexshaders) {
+					D3D11_BUFFER_DESC desc;
+					buffer->GetDesc(&desc);
+
+					if (desc.ByteWidth > 1000) {
+						continue;
+					}
+
+					ImGui::Text("cbuffer %p, vertexshaders: %5u pixelshaders: %5u mapped: %5u bytewidth: %5u", buffer, counter.vertexshaders, counter.pixelshaders, counter.mapped, desc.ByteWidth);
+				}
 			}
 
 			ImGui::End();
@@ -1017,6 +1044,7 @@ namespace reshade::d3d11
 			return;
 		}
 
+		/* ADLR comments this out to capture games like StarCitizen
 		static int cooldown = 0, traffic = 0;
 
 		if (cooldown-- > 0)
@@ -1042,6 +1070,7 @@ namespace reshade::d3d11
 				traffic = 0;
 			}
 		}
+		*/
 
 		if (_is_multisampling_enabled)
 		{
@@ -1058,11 +1087,11 @@ namespace reshade::d3d11
 
 		assert(_depth_buffer_texture_format >= 0 && _depth_buffer_texture_format < ARRAYSIZE(depth_texture_formats));
 
-		const auto [best_match, best_match_texture] = tracker.find_best_depth_stencil(_width, _height, depth_texture_formats[_depth_buffer_texture_format]);
+		_best_snapshot = tracker.find_best_snapshot(_width, _height, depth_texture_formats[_depth_buffer_texture_format]);
 
-		if (best_match != nullptr)
+		if (_best_snapshot.depthstencil != nullptr)
 		{
-			create_depthstencil_replacement(best_match, best_match_texture);
+			create_depthstencil_replacement(_best_snapshot.depthstencil.get(), _best_snapshot.texture.get());
 		}
 	}
 

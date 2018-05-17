@@ -39,7 +39,8 @@ namespace reshade
 		_screenshot_key_data(),
 		_effects_key_data(),
 		_screenshot_path(s_target_executable_path.parent_path()),
-		_variable_editor_height(300)
+		_variable_editor_height(300),
+		recap_handler(s_target_executable_path.filename_without_extension().string())
 	{
 		_menu_key_data[0] = 0x71; // VK_F2
 		_menu_key_data[2] = true; // VK_SHIFT
@@ -116,6 +117,8 @@ namespace reshade
 		{
 			reload();
 		}
+
+		recap_handler.on_swapchain_init(_width, _height, _input);
 
 		return true;
 	}
@@ -859,6 +862,8 @@ namespace reshade
 		to_absolute(_preset_files);
 		to_absolute(_effect_search_paths);
 		to_absolute(_texture_search_paths);
+
+		recap_handler.on_load_configuration(config);
 	}
 	void runtime::save_configuration() const
 	{
@@ -892,6 +897,8 @@ namespace reshade
 		config.set("STYLE", "ColActive", _imgui_col_active);
 		config.set("STYLE", "ColText", _imgui_col_text);
 		config.set("STYLE", "ColFPSText", _imgui_col_text_fps);
+
+		recap_handler.on_save_configuration(config);
 	}
 
 	void runtime::load_preset(const filesystem::path &path)
@@ -1183,7 +1190,7 @@ namespace reshade
 			if (!show_splash)
 			{
 				ImGui::SetNextWindowPos(ImVec2(_width - 80.f, 0));
-				ImGui::SetNextWindowSize(ImVec2(80, 100));
+				ImGui::SetNextWindowSize(ImVec2(160, 400)); // we need it tall enough for a few lines of text
 				ImGui::PushFont(_imgui_context->IO.Fonts->Fonts[1]);
 				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(_imgui_col_text_fps[0], _imgui_col_text_fps[1], _imgui_col_text_fps[2], 1.0f));
 				ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4());
@@ -1207,6 +1214,8 @@ namespace reshade
 					ImGui::Text("%.0f fps", _imgui_context->IO.Framerate);
 					ImGui::Text("%*lld ms", 3, std::chrono::duration_cast<std::chrono::milliseconds>(_last_frame_duration).count());
 				}
+
+				recap_handler.on_draw_note();
 
 				ImGui::End();
 				ImGui::PopStyleColor(2);
@@ -1754,6 +1763,11 @@ namespace reshade
 			}
 		}
 
+		if (recap_handler.on_draw_overlay_menu_settings()) {
+			save_configuration();
+			load_configuration();
+		}
+
 		if (ImGui::CollapsingHeader("User Interface", ImGuiTreeNodeFlags_DefaultOpen))
 		{
 			bool modified = false;
@@ -1865,6 +1879,8 @@ namespace reshade
 
 			ImGui::EndGroup();
 		}
+
+		recap_handler.on_draw_overlay_menu_statistics();
 
 		if (ImGui::CollapsingHeader("Textures", ImGuiTreeNodeFlags_DefaultOpen))
 		{

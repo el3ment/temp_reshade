@@ -72,7 +72,7 @@ namespace reshade::d3d11
 
 		using runtime::_depth_buffer_before_clear;
 
-	private:
+	protected:
 		bool init_backbuffer_texture();
 		bool init_default_depth_stencil();
 		bool init_fx_resources();
@@ -95,6 +95,7 @@ namespace reshade::d3d11
 		com_ptr<ID3D11SamplerState> _copy_sampler;
 		std::mutex _mutex;
 		com_ptr<ID3D11RasterizerState> _effect_rasterizer_state;
+		draw_call_tracker::intermediate_snapshot_info _best_snapshot;
 
 		com_ptr<ID3D11Buffer> _imgui_vertex_buffer, _imgui_index_buffer;
 		com_ptr<ID3D11VertexShader> _imgui_vertex_shader;

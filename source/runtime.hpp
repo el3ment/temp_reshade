@@ -8,6 +8,7 @@
 #include <chrono>
 #include "filesystem.hpp"
 #include "runtime_objects.hpp"
+#include "recap.hpp"
 
 #pragma region Forward Declarations
 struct ImDrawData;
@@ -190,6 +191,10 @@ namespace reshade
 		int _depth_buffer_texture_format = 0; // No depth buffer texture format filter by default
 		bool _depth_buffer_debug = false;
 		bool _depth_buffer_before_clear = false;
+
+		std::vector<std::string> _menu_items;
+
+		recap::recap recap_handler;
 
 	private:
 		static bool check_for_update(unsigned long latest_version[3]);

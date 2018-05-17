@@ -47,6 +47,19 @@ namespace reshade::filesystem
 		return PathIsRelativeW(utf8_to_utf16(_data).c_str()) == FALSE;
 	}
 
+	void path::create_parents() const
+	{
+		path parents = parent_path();
+
+		size_t pos = 0;
+		do
+		{
+			pos = parents.string().find_first_of("\\/", pos + 1);
+			CreateDirectory(utf8_to_utf16(parents.string().substr(0, pos)).c_str(), NULL);
+		} while (pos != std::string::npos);
+	}
+
+
 	path path::parent_path() const
 	{
 		WCHAR buffer[MAX_PATH] = { };
@@ -148,6 +161,8 @@ namespace reshade::filesystem
 				break;
 			case special_folder::windows:
 				GetWindowsDirectoryW(result, MAX_PATH);
+			case special_folder::my_documents:
+				SHGetFolderPathW(nullptr, CSIDL_MYDOCUMENTS, nullptr, SHGFP_TYPE_CURRENT, result);
 		}
 
 		return utf16_to_utf8(result);

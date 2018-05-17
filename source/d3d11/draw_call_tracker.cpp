@@ -1,13 +1,15 @@
 #include "draw_call_tracker.hpp"
 #include "runtime.hpp"
 #include <math.h>
+#include <set>
+#include "log.hpp"
 
 namespace reshade::d3d11
 {
 	void draw_call_tracker::merge(const draw_call_tracker& source)
 	{
-		_counters.vertices += source.vertices();
-		_counters.drawcalls += source.drawcalls();
+		_global_counter.vertices += source.total_vertices();
+		_global_counter.drawcalls += source.total_drawcalls();
 
 		for (auto source_entry : source._counters_per_used_depthstencil)
 		{
@@ -19,34 +21,94 @@ namespace reshade::d3d11
 			}
 			else
 			{
-				destination_entry->second.vertices += source_entry.second.vertices;
-				destination_entry->second.drawcalls += source_entry.second.drawcalls;
+				destination_entry->second.counter.vertices += source_entry.second.counter.vertices;
+				destination_entry->second.counter.drawcalls += source_entry.second.counter.drawcalls;
 			}
 		}
 	}
 
 	void draw_call_tracker::reset()
 	{
-		_counters.vertices = 0;
-		_counters.drawcalls = 0;
+		_global_counter.vertices = 0;
+		_global_counter.drawcalls = 0;
 		_counters_per_used_depthstencil.clear();
+		_counters_per_constant_buffer.clear();
 	}
 
-	void draw_call_tracker::log_drawcalls(UINT drawcalls, UINT vertices)
-	{
-		_counters.vertices += vertices;
-		_counters.drawcalls += drawcalls;
-	}
-	void draw_call_tracker::log_drawcalls(ID3D11DepthStencilView* depthstencil, UINT drawcalls, UINT vertices)
-	{
-		assert(depthstencil != nullptr && drawcalls > 0);
+	void draw_call_tracker::on_draw(ID3D11DeviceContext *context, UINT vertices) {
+		// get active depthstencil
+		// get active render targets
+		// update counts
+		_global_counter.vertices += vertices;
+		_global_counter.drawcalls += 1;
 
-		const auto counters = _counters_per_used_depthstencil.find(depthstencil);
+		ID3D11RenderTargetView *rendertargets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = { nullptr };
+		ID3D11DepthStencilView *depthstencil = nullptr;
 
-		if (counters != _counters_per_used_depthstencil.end())
+		context->OMGetRenderTargetsAndUnorderedAccessViews(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rendertargets, &depthstencil, 0, 0, nullptr);
+
+		if (depthstencil == nullptr) {
+			// this is a draw call with no depthstencil
+			return;
+		}
+
+		const auto intermediate_snapshot = _counters_per_used_depthstencil.find(depthstencil);
+
+
+		if (intermediate_snapshot != _counters_per_used_depthstencil.end())
 		{
-			counters->second.vertices += vertices;
-			counters->second.drawcalls += drawcalls;
+			intermediate_snapshot->second.counter.vertices += vertices;
+			intermediate_snapshot->second.counter.drawcalls += 1;
+
+			// Find the render targets, if they exist, and update their counts
+			for (unsigned int i = 0; i < D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; i++) {
+				if (rendertargets[i] != nullptr) {
+					auto it = intermediate_snapshot->second.additional_views.find(rendertargets[i]);
+					if (it != intermediate_snapshot->second.additional_views.end()) {
+						it->second.vertices += vertices;
+						it->second.drawcalls += 1;
+					}
+					else {
+						// This shouldn't happen - it means someone has called "draw" with a rendertarget without calling track_rendertargets first
+						assert(false);
+					}
+				}
+			}
+		}
+
+		// Capture constant buffers that are used when depthstencils are drawn
+		ID3D11Buffer *vscbuffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = { nullptr };
+		context->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, vscbuffers);
+
+		for(unsigned int i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; i++){
+			// uses the default drawcalls = 0 the first time around.
+			if (vscbuffers[i] != nullptr) {
+				_counters_per_constant_buffer[vscbuffers[i]].vertexshaders += 1;
+			}
+		}
+
+		ID3D11Buffer *pscbuffers[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = { nullptr };
+		context->PSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, pscbuffers);
+
+		for (unsigned int i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; i++) {
+			// uses the default drawcalls = 0 the first time around.
+			if (pscbuffers[i] != nullptr) {
+				_counters_per_constant_buffer[pscbuffers[i]].pixelshaders += 1;
+			}
+		}
+
+		ID3D11PixelShader* shader = nullptr;
+		ID3D11ClassInstance* class_instance = nullptr;
+		context->PSGetShader(&shader, NULL, NULL);
+	}
+
+	void draw_call_tracker::on_map(ID3D11DeviceContext *context, ID3D11Resource *pResource) {
+
+		D3D11_RESOURCE_DIMENSION dim;
+		pResource->GetType(&dim);
+
+		if (dim == D3D11_RESOURCE_DIMENSION::D3D11_RESOURCE_DIMENSION_BUFFER) {
+			_counters_per_constant_buffer[reinterpret_cast<ID3D11Buffer*>(pResource)].mapped += 1;
 		}
 	}
 
@@ -54,29 +116,53 @@ namespace reshade::d3d11
 	{
 		return _counters_per_used_depthstencil.find(depthstencil) != _counters_per_used_depthstencil.end();
 	}
-	void draw_call_tracker::track_depthstencil(ID3D11DepthStencilView *depthstencil, com_ptr<ID3D11Texture2D> texture)
+	void draw_call_tracker::track_rendertargets(ID3D11DepthStencilView *depthstencil, com_ptr<ID3D11Texture2D> texture, UINT numviews, ID3D11RenderTargetView *const *ppRenderTargetViews)
 	{
 		assert(depthstencil != nullptr);
 
-		if (!check_depthstencil(depthstencil))
+		auto it = _counters_per_used_depthstencil.find(depthstencil);
+
+		if (it == _counters_per_used_depthstencil.end())
 		{
-			_counters_per_used_depthstencil.emplace(depthstencil, depthstencil_counter_info { 0, 0, texture });
+			auto initial_info = intermediate_snapshot_info();
+			initial_info.depthstencil = depthstencil;
+			initial_info.texture = texture;
+			for (UINT i = 0; i < numviews; i++) {
+				initial_info.additional_views.emplace(ppRenderTargetViews[i], draw_counter());
+			}
+			_counters_per_used_depthstencil.emplace(depthstencil, initial_info);
+		}
+		else {
+			// If we are already tracking depth, make sure we are keeping track of all the unique rendertargets that are drawn
+			// at the same time
+			for (UINT i = 0; i < numviews; i++) {
+				auto rtit = it->second.additional_views.find(ppRenderTargetViews[i]);
+				if (rtit == it->second.additional_views.end()) {
+					it->second.additional_views.emplace(ppRenderTargetViews[i], draw_counter());
+				}
+			}
 		}
 	}
 
-	std::pair<ID3D11DepthStencilView *, ID3D11Texture2D *> draw_call_tracker::find_best_depth_stencil(UINT width, UINT height, DXGI_FORMAT format)
+	void draw_call_tracker::update_tracked_depthtexture(ID3D11DepthStencilView *depthstencil, com_ptr<ID3D11Texture2D> texture) {
+		auto it = _counters_per_used_depthstencil.find(depthstencil);
+		if (it != _counters_per_used_depthstencil.end()) {
+			it->second.texture = texture;
+		}
+	}
+
+	draw_call_tracker::intermediate_snapshot_info draw_call_tracker::find_best_snapshot(UINT width, UINT height, DXGI_FORMAT format)
 	{
 		const float aspect_ratio = float(width) / float(height);
 
-		depthstencil_counter_info best_info = { };
-		std::pair<ID3D11DepthStencilView *, ID3D11Texture2D *> best_match = { };
+		intermediate_snapshot_info best_info = { };
 
 		for (const auto &it : _counters_per_used_depthstencil)
 		{
 			const auto depthstencil = it.first;
 			auto &depthstencil_info = it.second;
 
-			if (depthstencil_info.drawcalls == 0 || depthstencil_info.vertices == 0)
+			if (depthstencil_info.counter.drawcalls == 0 || depthstencil_info.counter.vertices == 0)
 			{
 				continue;
 			}
@@ -121,18 +207,13 @@ namespace reshade::d3d11
 				continue;
 			}
 
-			if (depthstencil_info.drawcalls >= best_info.drawcalls)
+			if (depthstencil_info.counter.drawcalls >= best_info.counter.drawcalls)
 			{
-				best_match.first = depthstencil.get();
-				// Warning: Reference to this object is lost after leaving the scope.
-				// But that should be fine since either this tracker or the depth stencil should still have a reference on it left so that it stays alive.
-				best_match.second = texture.get();
-
-				best_info.vertices = depthstencil_info.vertices;
-				best_info.drawcalls = depthstencil_info.drawcalls;
+				best_info = depthstencil_info;
+				best_info.texture = texture.get();
 			}
 		}
 
-		return best_match;
+		return best_info;
 	}
 }

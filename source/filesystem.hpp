@@ -16,6 +16,7 @@ namespace reshade::filesystem
 		app_data,
 		system,
 		windows,
+		my_documents,
 	};
 
 	class path
@@ -38,6 +39,7 @@ namespace reshade::filesystem
 		size_t length() const { return _data.length(); }
 		bool is_absolute() const;
 
+		void create_parents() const;
 		path parent_path() const;
 		path filename() const;
 		path filename_without_extension() const;
